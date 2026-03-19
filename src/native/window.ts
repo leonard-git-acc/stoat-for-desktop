@@ -8,6 +8,7 @@ import {
   desktopCapturer,
   ipcMain,
   nativeImage,
+  session,
 } from "electron";
 
 import windowIconAsset from "../../assets/desktop/icon.png?asset";
@@ -178,24 +179,53 @@ export function createMainWindow() {
     mainWindow.loadURL(_buildUrl.toString());
   }
 
-  // enable screen capture; on Linux desktopCapturer is used as useSystemPicker is unreliable
-  if (process.platform === "linux") {
-    mainWindow.webContents.session.setDisplayMediaRequestHandler(
-      async (_request, callback) => {
-        const sources = await desktopCapturer.getSources({
-          types: ["screen", "window"],
+  // add a display media request handler
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (request, callback) => {
+      desktopCapturer
+        .getSources({ types: ["screen", "window"] })
+        .then((sources) => {
+          if (sources.length == 1) {
+            callback({ video: sources[0], audio: "loopback" });
+            return;
+          }
+
+          const menu = new Menu();
+          let hasCalledBack = false;
+          const callbackAtomic = (callbackOpts: Electron.Streams) => {
+            if (!hasCalledBack) {
+              hasCalledBack = true;
+              callback(callbackOpts);
+            }
+          };
+
+          menu.append(
+            new MenuItem({
+              label: "Choose screen share source",
+              enabled: false,
+            }),
+          );
+
+          sources.forEach((source) => {
+            menu.append(
+              new MenuItem({
+                label: source.name,
+                click() {
+                  callbackAtomic({ video: source, audio: "loopback" });
+                },
+              }),
+            );
+          });
+
+          if (sources.length > 0)
+            menu.popup({ callback: () => callbackAtomic({}) });
+        })
+        .catch(() => {
+          callback({});
         });
-        callback({ video: sources[0] });
-      },
-    );
-  } else {
-    mainWindow.webContents.session.setDisplayMediaRequestHandler(
-      (request, callback) => {
-        callback({ video: request.video });
-      },
-      { useSystemPicker: true },
-    );
-  }
+    },
+    { useSystemPicker: true },
+  );
 
   // minimise window to tray
   mainWindow.on("close", (event) => {
